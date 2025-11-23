@@ -285,6 +285,108 @@ def add_card():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/recognize", methods=["POST"])
+def recognize_card():
+    """
+    Recognize a Pokemon card and return full details.
+    
+    Request body:
+        {
+            "image": "base64_encoded_image_data",
+            "hash_type": "perceptual" (optional),
+            "threshold": 30 (optional, max distance for match)
+        }
+        
+    Response:
+        {
+            "success": true,
+            "result": {
+                "cardId": "base4-1",
+                "cardName": "Alakazam",
+                "confidence": 100.0,
+                "method": "image-hash",
+                "distance": 0,
+                "imageUrl": "https://images.pokemontcg.io/base4/1_hires.png"
+            }
+        }
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or "image" not in data:
+            return jsonify({"success": False, "error": "Missing image data"}), 400
+        
+        # Decode base64 image
+        image_data = base64.b64decode(data["image"])
+        img = Image.open(io.BytesIO(image_data))
+        
+        # Get parameters
+        hash_type = data.get("hash_type", "perceptual")
+        threshold = data.get("threshold", 30)
+        
+        # Find matches
+        matches = get_most_similar(img, hash_type=hash_type, n=10)
+        
+        if not matches or len(matches) == 0:
+            return jsonify({
+                "success": False,
+                "error": "No matches found"
+            }), 404
+        
+        best_match = matches[0]
+        
+        # Check if match is good enough
+        if best_match["distance"] > threshold:
+            return jsonify({
+                "success": False,
+                "error": f"No good match found (best distance: {best_match['distance']})",
+                "best_match": best_match
+            }), 404
+        
+        # Calculate confidence (distance 0 = 100%, distance 30 = 50%)
+        confidence = max(50, min(100, 100 - (best_match["distance"] / 3)))
+        
+        # Parse card ID to generate image URL
+        card_id = best_match["id"]
+        
+        # Try to determine the image URL based on card ID format
+        # Format examples: base4-1, swsh4-81, sv09-142
+        if "-" in card_id:
+            parts = card_id.split("-")
+            set_id = parts[0]
+            card_num = parts[1]
+            
+            # Check if it's a modern set (starts with sv, swsh, xy, sm, etc.)
+            if set_id.startswith(("sv", "swsh", "sm", "xy")):
+                # TCGdex format
+                image_url = f"https://assets.tcgdex.net/en/{set_id}/{card_num}/high.png"
+            else:
+                # Pokemon TCG IO format (older sets)
+                image_url = f"https://images.pokemontcg.io/{set_id}/{card_num}_hires.png"
+        else:
+            # Fallback
+            image_url = f"https://assets.tcgdex.net/en/{card_id}/high.png"
+        
+        # Build result
+        result = {
+            "cardId": card_id,
+            "cardName": card_id.split("-")[0].capitalize(),  # Fallback name
+            "confidence": round(confidence, 1),
+            "method": "image-hash",
+            "distance": best_match["distance"],
+            "imageUrl": image_url,
+            "matches": matches[:5]  # Include top 5 matches for reference
+        }
+        
+        return jsonify({
+            "success": True,
+            "result": result
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 if __name__ == "__main__":
     print("Starting Pokemon Card Image Matching API...")
     print("Endpoints:")
@@ -293,4 +395,5 @@ if __name__ == "__main__":
     print("  POST /match_file - Match card from uploaded file")
     print("  POST /compute_hash - Compute hashes for a card")
     print("  POST /add_card - Add a new card to the database")
+    print("  POST /recognize - Recognize card and return full details")
     app.run(host="0.0.0.0", port=5001, debug=True)
